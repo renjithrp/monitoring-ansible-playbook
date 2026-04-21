@@ -1,0 +1,37 @@
+global:
+{% if alertmanager_slack_enabled | bool %}
+  slack_api_url: '{{ alertmanager_slack_webhook_url }}'
+{% endif %}
+{% if alertmanager_email_enabled | bool %}
+  smtp_smarthost: '{{ alertmanager_smtp_smarthost }}'
+  smtp_from: '{{ alertmanager_email_from }}'
+  smtp_auth_username: '{{ alertmanager_smtp_auth_username }}'
+  smtp_auth_password: '{{ alertmanager_smtp_auth_password }}'
+{% endif %}
+
+route:
+  receiver: '{{ alertmanager_receiver_name }}'
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: '{{ alertmanager_receiver_name }}'
+{% if alertmanager_email_enabled | bool %}
+    email_configs:
+      - to: '{{ alertmanager_email_to }}'
+        send_resolved: true
+{% endif %}
+{% if alertmanager_slack_enabled | bool %}
+    slack_configs:
+      - channel: '{{ alertmanager_slack_channel }}'
+        username: '{{ alertmanager_slack_username }}'
+        send_resolved: {{ alertmanager_slack_send_resolved | bool | lower }}
+        title: '[{{ "{{" }} .Status | toUpper {{ "}}" }}] {{ "{{" }} .CommonLabels.alertname {{ "}}" }}'
+        text: >-
+          {{ "{{" }} range .Alerts {{ "}}" }}
+          *Alert:* {{ "{{" }} .Annotations.summary | default .Labels.alertname {{ "}}" }}
+          *Description:* {{ "{{" }} .Annotations.description | default "n/a" {{ "}}" }}
+          *Severity:* {{ "{{" }} .Labels.severity | default "n/a" {{ "}}" }}
+          {{ "{{" }} end {{ "}}" }}
+{% endif %}

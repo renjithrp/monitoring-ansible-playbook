@@ -1,0 +1,55 @@
+APP_NAME = Monitoring Git
+RUN_USER = git
+RUN_MODE = prod
+WORK_PATH = /var/lib/gitea
+
+[database]
+DB_TYPE  = mysql
+HOST     = 127.0.0.1:{{ mysql_host_port }}
+NAME     = {{ gitea_mysql_database }}
+USER     = {{ gitea_mysql_user }}
+PASSWD   = {{ gitea_mysql_password }}
+SSL_MODE = disable
+CHARSET  = utf8mb4
+
+[server]
+DOMAIN           = {{ server_http_host }}
+HTTP_ADDR        = 127.0.0.1
+HTTP_PORT        = {{ gitea_http_port }}
+ROOT_URL         = {{ server_http_origin }}/gitea/
+SSH_DOMAIN       = {{ monitoring_server_fqdn }}
+SSH_PORT         = {{ gitea_ssh_port }}
+SSH_LISTEN_PORT  = {{ gitea_ssh_port }}
+START_SSH_SERVER = true
+OFFLINE_MODE     = false
+
+[security]
+INSTALL_LOCK = true
+SECRET_KEY   = e156dc1c7fc5f17e23081e9a4c9fb797a343e9844b16a4b69a895079754aade4
+INTERNAL_TOKEN = fd34e4bf5ed3178dc4e4bb4e33fe7db517b2e95122bc95759dc9095a083ca0ab
+PASSWORD_HASH_ALGO = pbkdf2
+
+[repository]
+ROOT = /var/lib/gitea/git/repositories
+
+[repository.upload]
+TEMP_PATH = /var/lib/gitea/data/tmp/package-upload
+
+[packages]
+CHUNKED_UPLOAD_PATH = /var/lib/gitea/data/tmp/package-upload
+
+[service]
+DISABLE_REGISTRATION = false
+REQUIRE_SIGNIN_VIEW  = false
+REGISTER_EMAIL_CONFIRM = false
+ENABLE_NOTIFY_MAIL = false
+
+[mailer]
+ENABLED = false
+
+[actions]
+ENABLED = true
+DEFAULT_ACTIONS_URL = github
+
+[service]
+DISABLE_REGISTRATION = true

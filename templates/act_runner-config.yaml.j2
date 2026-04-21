@@ -1,0 +1,34 @@
+log:
+  level: info
+
+runner:
+  file: /var/lib/act_runner/.runner
+  capacity: 1
+  timeout: 3h
+  insecure: false
+  fetch_timeout: 5s
+  fetch_interval: 2s
+  labels:
+{% for label in gitea_runner_labels.split(',') %}
+    - {{ label | trim | quote }}
+{% endfor %}
+
+cache:
+  enabled: true
+  dir: ""
+  host: ""
+  port: 0
+  external_server: ""
+
+container:
+  network: ""
+  privileged: false
+  options:
+  workdir_parent:
+  valid_volumes: []
+  docker_host: ""
+  force_pull: false
+  force_rebuild: false
+
+host:
+  workdir_parent: /var/lib/act_runner/workdir

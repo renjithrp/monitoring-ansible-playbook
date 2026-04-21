@@ -1,0 +1,13 @@
+[server]
+http_addr = 127.0.0.1
+http_port = {{ grafana_port }}
+domain = {{ server_http_host }}
+root_url = {{ server_http_origin }}/grafana/
+serve_from_sub_path = true
+
+[security]
+admin_user = {{ grafana_admin_user }}
+admin_password = {{ grafana_admin_password }}
+
+[users]
+allow_sign_up = false

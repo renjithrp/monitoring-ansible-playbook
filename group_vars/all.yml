@@ -1,0 +1,199 @@
+---
+# General
+server_timezone: "UTC"
+project_root: /opt/monitoring-stack
+apt_proxy_url: "http://10.5.35.180:8080"
+apt_https_proxy: "http://10.5.35.180:8080"
+alertmanager_version: "0.32.0"
+alertmanager_binary_mode: "local"
+alertmanager_archive_src_amd64: "files/alertmanager-0.32.0.linux-amd64.tar.gz"
+alertmanager_archive_src_arm64: ""
+loki_version: "3.6.3"
+loki_binary_mode: "local"
+loki_archive_src_amd64: "files/loki-linux-amd64.zip"
+loki_archive_src_arm64: "files/loki-linux-arm64.zip"
+
+# Ports published on the standalone host
+nginx_public_port: 8080
+grafana_port: 3000
+prometheus_port: 9090
+alertmanager_port: 9093
+loki_port: 3100
+gitea_http_port: 3001
+gitea_ssh_port: 2222
+mysql_host_port: 3306
+
+# Domain / hostname settings
+monitoring_server_fqdn: "monitoring.example.internal"
+
+# Extra Nginx reverse proxies
+# Example:
+# extra_nginx_reverse_proxies:
+#   - name: myapp
+#     path: /myapp
+#     upstream: http://127.0.0.1:8080
+#     forwarded_prefix: /myapp
+#     show_on_index: true
+extra_nginx_reverse_proxies: []
+
+# Grafana
+install_grafana: true
+grafana_use_external_repo: false
+grafana_repo_mode: "deb"
+grafana_internal_repo_url: ""
+grafana_gpg_key_src: ""
+grafana_deb_url: "https://dl.grafana.com/grafana/release/13.0.0-23336907879/grafana_13.0.0-23336907879_23336907879_linux_amd64.deb"
+grafana_deb_src: "files/grafana_13.0.0_23336907879_linux_amd64.deb"
+grafana_admin_user: admin
+grafana_admin_password: "ChangeMe_Grafana_123!"
+
+# MySQL
+gitea_mysql_database: gitea
+gitea_mysql_user: gitea
+gitea_mysql_password: "ChangeMe_GiteaDB_123!"
+mysql_root_password: "ChangeMe_MySQLRoot_123!"
+
+# Gitea
+install_gitea: true
+gitea_version: "1.23.7"
+gitea_binary_mode: "local"
+gitea_binary_src_amd64: "files/gitea-1.23.7-linux-amd64"
+gitea_binary_src_arm64: ""
+gitea_runner_version: "0.2.11"
+gitea_runner_binary_mode: "local"
+gitea_runner_binary_src_amd64: "files/act_runner-0.2.11-linux-amd64"
+gitea_runner_binary_src_arm64: ""
+gitea_admin_user: admin
+gitea_admin_email: admin@example.com
+gitea_admin_password: "ChangeMe_GiteaAdmin_123!"
+
+# Gitea runner
+gitea_runner_enabled: false
+gitea_runner_force_reregister: false
+gitea_runner_name: "standalone-runner"
+gitea_runner_labels: "linux_amd64:host"
+gitea_runner_registration_token: ""
+
+# Alertmanager
+alertmanager_receiver_name: default-email
+alertmanager_email_enabled: true
+alertmanager_email_to: devops@example.com
+alertmanager_email_from: alertmanager@example.com
+alertmanager_smtp_smarthost: smtp.example.com:587
+alertmanager_smtp_auth_username: alertmanager@example.com
+alertmanager_smtp_auth_password: "ChangeMe_SMTP_123!"
+alertmanager_slack_enabled: false
+alertmanager_slack_webhook_url: ""
+alertmanager_slack_channel: "#alerts"
+alertmanager_slack_username: "Alertmanager"
+alertmanager_slack_send_resolved: true
+
+# Prometheus scrape targets
+prometheus_additional_scrape_configs:
+  - job_name: seaweedfs-master
+    metrics_path: /metrics
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - '10.5.93.212:9325'
+        labels:
+          cluster: 'seaweedfs'
+          datacenter: 'dc1'
+          host: 'swfs-n1'
+          rack: 'rack1'
+          role: 'master'
+      - targets:
+          - '10.5.93.213:9325'
+        labels:
+          cluster: 'seaweedfs'
+          datacenter: 'dc1'
+          host: 'swfs-n2'
+          rack: 'rack2'
+          role: 'master'
+      - targets:
+          - '10.5.93.214:9325'
+        labels:
+          cluster: 'seaweedfs'
+          datacenter: 'dc1'
+          host: 'swfs-n3'
+          rack: 'rack3'
+          role: 'master'
+
+  - job_name: seaweedfs-volume
+    metrics_path: /metrics
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - '10.5.93.212:9326'
+        labels:
+          cluster: 'seaweedfs'
+          datacenter: 'dc1'
+          host: 'swfs-n1'
+          rack: 'rack1'
+          role: 'volume'
+      - targets:
+          - '10.5.93.213:9326'
+        labels:
+          cluster: 'seaweedfs'
+          datacenter: 'dc1'
+          host: 'swfs-n2'
+          rack: 'rack2'
+          role: 'volume'
+      - targets:
+          - '10.5.93.214:9326'
+        labels:
+          cluster: 'seaweedfs'
+          datacenter: 'dc1'
+          host: 'swfs-n3'
+          rack: 'rack3'
+          role: 'volume'
+      - targets:
+          - '10.5.93.215:9326'
+        labels:
+          cluster: 'seaweedfs'
+          datacenter: 'dc1'
+          host: 'swfs-n4'
+          rack: 'rack4'
+          role: 'volume'
+
+  - job_name: seaweedfs-filer
+    metrics_path: /metrics
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - '10.5.93.213:9327'
+        labels:
+          cluster: 'seaweedfs'
+          datacenter: 'dc1'
+          host: 'swfs-n2'
+          rack: 'rack2'
+          role: 'filer'
+      - targets:
+          - '10.5.93.214:9327'
+        labels:
+          cluster: 'seaweedfs'
+          datacenter: 'dc1'
+          host: 'swfs-n3'
+          rack: 'rack3'
+          role: 'filer'
+
+  - job_name: seaweedfs-s3
+    metrics_path: /metrics
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - '10.5.93.213:9328'
+        labels:
+          cluster: 'seaweedfs'
+          datacenter: 'dc1'
+          host: 'swfs-n2'
+          rack: 'rack2'
+          role: 's3'
+      - targets:
+          - '10.5.93.214:9328'
+        labels:
+          cluster: 'seaweedfs'
+          datacenter: 'dc1'
+          host: 'swfs-n3'
+          rack: 'rack3'
+          role: 's3'

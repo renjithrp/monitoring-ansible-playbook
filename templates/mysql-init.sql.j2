@@ -1,0 +1,4 @@
+CREATE DATABASE IF NOT EXISTS `{{ gitea_mysql_database }}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '{{ gitea_mysql_user }}'@'%' IDENTIFIED BY '{{ gitea_mysql_password }}';
+GRANT ALL PRIVILEGES ON `{{ gitea_mysql_database }}`.* TO '{{ gitea_mysql_user }}'@'%';
+FLUSH PRIVILEGES;

@@ -1,0 +1,1052 @@
+---
+- name: Setup all-in-one monitoring and build server
+  hosts: monitoring
+  become: true
+  vars:
+    server_http_host: "{{ ansible_host | default(inventory_hostname) }}"
+    server_http_port: "{{ nginx_public_port | default(80) }}"
+    server_http_origin: "http://{{ server_http_host }}{{ '' if (server_http_port | int) == 80 else ':' ~ (server_http_port | string) }}"
+    install_gitea_runner: "{{ install_gitea | bool and gitea_runner_enabled | bool }}"
+    gitea_binary_arch: "{{ 'arm64' if ansible_architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+    alertmanager_binary_arch: "{{ 'arm64' if ansible_architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+    loki_binary_arch: "{{ 'arm64' if ansible_architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+    gitea_download_url: "https://dl.gitea.com/gitea/{{ gitea_version }}/gitea-{{ gitea_version }}-linux-{{ gitea_binary_arch }}"
+    gitea_runner_download_url: "https://dl.gitea.com/act_runner/{{ gitea_runner_version }}/act_runner-{{ gitea_runner_version }}-linux-{{ gitea_binary_arch }}"
+    gitea_runner_instance_url: "{{ server_http_origin }}/gitea/"
+    gitea_local_binary_src: "{{ gitea_binary_src_arm64 if gitea_binary_arch == 'arm64' else gitea_binary_src_amd64 }}"
+    gitea_runner_local_binary_src: "{{ gitea_runner_binary_src_arm64 if gitea_binary_arch == 'arm64' else gitea_runner_binary_src_amd64 }}"
+    alertmanager_download_url: "https://github.com/prometheus/alertmanager/releases/download/v{{ alertmanager_version }}/alertmanager-{{ alertmanager_version }}.linux-{{ alertmanager_binary_arch }}.tar.gz"
+    alertmanager_local_archive_src: "{{ alertmanager_archive_src_arm64 if alertmanager_binary_arch == 'arm64' else alertmanager_archive_src_amd64 }}"
+    loki_download_url: "https://github.com/grafana/loki/releases/download/v{{ loki_version }}/loki-linux-{{ loki_binary_arch }}.zip"
+    loki_local_archive_src: "{{ loki_archive_src_arm64 if loki_binary_arch == 'arm64' else loki_archive_src_amd64 }}"
+    proxy_env:
+      http_proxy: "{{ apt_proxy_url }}"
+      https_proxy: "{{ apt_https_proxy | default(apt_proxy_url) }}"
+      HTTP_PROXY: "{{ apt_proxy_url }}"
+      HTTPS_PROXY: "{{ apt_https_proxy | default(apt_proxy_url) }}"
+  pre_tasks:
+    - name: Ensure controller files directory exists
+      file:
+        path: "{{ playbook_dir }}/files"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Download Grafana deb on controller
+      get_url:
+        url: "{{ grafana_deb_url }}"
+        dest: "{{ playbook_dir }}/{{ grafana_deb_src }}"
+        mode: '0644'
+      when:
+        - install_grafana | bool
+        - grafana_repo_mode == 'deb'
+        - grafana_deb_src | length > 0
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Download Gitea binary on controller
+      get_url:
+        url: "{{ gitea_download_url }}"
+        dest: "{{ playbook_dir }}/{{ gitea_local_binary_src }}"
+        mode: '0755'
+      when:
+        - install_gitea | bool
+        - gitea_binary_mode == 'local'
+        - gitea_local_binary_src | length > 0
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Download Gitea runner binary on controller
+      get_url:
+        url: "{{ gitea_runner_download_url }}"
+        dest: "{{ playbook_dir }}/{{ gitea_runner_local_binary_src }}"
+        mode: '0755'
+      when:
+        - install_gitea_runner | bool
+        - gitea_runner_binary_mode == 'local'
+        - gitea_runner_local_binary_src | length > 0
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Download Alertmanager archive on controller
+      get_url:
+        url: "{{ alertmanager_download_url }}"
+        dest: "{{ playbook_dir }}/{{ alertmanager_local_archive_src }}"
+        mode: '0644'
+      when:
+        - alertmanager_binary_mode == 'local'
+        - alertmanager_local_archive_src | length > 0
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Download Loki archive on controller
+      get_url:
+        url: "{{ loki_download_url }}"
+        dest: "{{ playbook_dir }}/{{ loki_local_archive_src }}"
+        mode: '0644'
+      when:
+        - loki_binary_mode == 'local'
+        - loki_local_archive_src | length > 0
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Detect package manager
+      raw: |
+        if command -v apt-get >/dev/null 2>&1; then
+          echo apt
+        else
+          echo unknown
+        fi
+      register: monitoring_pkg_mgr
+      changed_when: false
+
+    - name: Configure APT proxy on monitoring server
+      raw: |
+        rm -f /etc/apt/apt.conf.d/90ansible-proxy && \
+        printf '%s\n' \
+          'Acquire::http::Proxy "{{ apt_proxy_url }}";' \
+          'Acquire::https::Proxy "{{ apt_https_proxy | default(apt_proxy_url) }}";' \
+          > /etc/apt/apt.conf.d/01proxy
+      when: monitoring_pkg_mgr.stdout.strip() == 'apt'
+      changed_when: false
+
+    - name: Disable cdrom APT sources on monitoring server
+      raw: |
+        for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+          [ -f "$file" ] || continue
+          sed -i '\|^[[:space:]]*deb[[:space:]].*file:/\{2,3\}/cdrom| s/^/# disabled by ansible: /' "$file"
+        done
+      when: monitoring_pkg_mgr.stdout.strip() == 'apt'
+      changed_when: false
+
+    - name: Update apt cache
+      apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+  tasks:
+    - name: Validate host-mode runner labels
+      assert:
+        that:
+          - gitea_runner_labels | default('') | trim | length > 0
+          - "':host' in gitea_runner_labels"
+        fail_msg: "Host-mode Gitea runner labels must include ':host', for example 'linux_amd64:host'."
+      when: install_gitea_runner | bool
+
+    - name: Install required OS packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - git
+          - gnupg
+          - mariadb-client
+          - mariadb-server
+          - nginx
+          - prometheus
+          - tar
+          - unzip
+        state: present
+
+    - name: Uninstall Docker for host-mode Gitea runner
+      apt:
+        name:
+          - docker.io
+        state: absent
+        purge: true
+      when: install_gitea_runner | bool
+
+    - name: Create apt keyring directory
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Add Grafana GPG key
+      get_url:
+        url: https://apt.grafana.com/gpg.key
+        dest: /etc/apt/keyrings/grafana.asc
+        mode: '0644'
+      environment: "{{ proxy_env }}"
+      when:
+        - install_grafana | bool
+        - grafana_use_external_repo | bool
+
+    - name: Copy Grafana GPG key from repo
+      copy:
+        src: "{{ grafana_gpg_key_src }}"
+        dest: /etc/apt/keyrings/grafana.asc
+        mode: '0644'
+      when:
+        - install_grafana | bool
+        - grafana_repo_mode == 'internal'
+        - grafana_gpg_key_src | length > 0
+
+    - name: Add Grafana apt repository
+      apt_repository:
+        repo: >-
+          deb [signed-by=/etc/apt/keyrings/grafana.asc]
+          {{
+            'https://apt.grafana.com'
+            if (grafana_use_external_repo | bool)
+            else grafana_internal_repo_url
+          }}
+          stable main
+        state: present
+        filename: grafana
+      environment: "{{ proxy_env }}"
+      when:
+        - install_grafana | bool
+        - >
+          (grafana_use_external_repo | bool) or
+          (
+            grafana_repo_mode == 'internal' and
+            grafana_internal_repo_url | length > 0 and
+            grafana_gpg_key_src | length > 0
+          )
+      notify: Refresh apt cache
+
+    - name: Install Grafana from apt
+      apt:
+        name: grafana
+        state: present
+        update_cache: true
+      when:
+        - install_grafana | bool
+        - grafana_repo_mode != 'deb'
+
+    - name: Copy Grafana deb from repo
+      copy:
+        src: "{{ grafana_deb_src }}"
+        dest: /tmp/grafana.deb
+        mode: '0644'
+      when:
+        - install_grafana | bool
+        - grafana_repo_mode == 'deb'
+        - grafana_deb_src | length > 0
+
+    - name: Install Grafana from local deb
+      apt:
+        deb: /tmp/grafana.deb
+        state: present
+      when:
+        - install_grafana | bool
+        - grafana_repo_mode == 'deb'
+        - grafana_deb_src | length > 0
+
+    - name: Ensure git service user exists
+      shell: |
+        if id -u git >/dev/null 2>&1; then
+          usermod -d /var/lib/gitea -s /bin/bash git
+        else
+          useradd --system --create-home --home-dir /var/lib/gitea --shell /bin/bash git
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: install_gitea | bool
+
+    - name: Ensure alertmanager service user exists
+      shell: |
+        if id -u alertmanager >/dev/null 2>&1; then
+          usermod -d /var/lib/alertmanager -s /usr/sbin/nologin alertmanager
+        else
+          useradd --system --create-home --home-dir /var/lib/alertmanager --shell /usr/sbin/nologin alertmanager
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Ensure loki service user exists
+      shell: |
+        if id -u loki >/dev/null 2>&1; then
+          usermod -d /var/lib/loki -s /usr/sbin/nologin loki
+        else
+          useradd --system --create-home --home-dir /var/lib/loki --shell /usr/sbin/nologin loki
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Ensure act_runner service user exists
+      shell: |
+        if id -u act_runner >/dev/null 2>&1; then
+          usermod -d /var/lib/act_runner -s /usr/sbin/nologin act_runner
+        else
+          useradd --system --create-home --home-dir /var/lib/act_runner --shell /usr/sbin/nologin act_runner
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: install_gitea_runner | bool
+
+    - name: Create service directories
+      file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner | default('root') }}"
+        group: "{{ item.group | default(item.owner | default('root')) }}"
+        mode: "{{ item.mode | default('0755') }}"
+      loop:
+        - { path: /etc/gitea, owner: root, group: git, mode: '0770' }
+        - { path: /var/lib/gitea, owner: git, group: git }
+        - { path: /var/lib/gitea/custom, owner: git, group: git }
+        - { path: /var/lib/gitea/data, owner: git, group: git }
+        - { path: /var/lib/gitea/log, owner: git, group: git }
+        - { path: /var/lib/gitea/tmp, owner: git, group: git }
+        - { path: /var/lib/gitea/git, owner: git, group: git }
+        - { path: /var/lib/gitea/git/repositories, owner: git, group: git }
+        - { path: /etc/alertmanager, owner: root, group: alertmanager, mode: '0750' }
+        - { path: /var/lib/alertmanager, owner: alertmanager, group: alertmanager, mode: '0750' }
+        - { path: /usr/share/alertmanager/ui, owner: root, group: root, mode: '0755' }
+        - { path: /etc/loki, owner: root, group: loki, mode: '0750' }
+        - { path: /var/lib/loki, owner: loki, group: loki, mode: '0750' }
+        - { path: /var/lib/loki/chunks, owner: loki, group: loki, mode: '0750' }
+        - { path: /var/lib/loki/rules, owner: loki, group: loki, mode: '0750' }
+        - { path: /etc/act_runner, owner: root, group: act_runner, mode: '0750' }
+        - { path: /var/lib/act_runner, owner: act_runner, group: act_runner, mode: '0750' }
+        - { path: /etc/systemd/system/prometheus.service.d }
+      when: >
+        (
+          item.path not in [
+            '/etc/gitea',
+            '/var/lib/gitea',
+            '/var/lib/gitea/custom',
+            '/var/lib/gitea/data',
+            '/var/lib/gitea/log',
+            '/var/lib/gitea/tmp',
+            '/var/lib/gitea/git',
+            '/var/lib/gitea/git/repositories'
+          ]
+          or
+          (install_gitea | bool)
+        )
+        and
+        (
+          item.path not in ['/etc/act_runner', '/var/lib/act_runner']
+          or
+          (install_gitea_runner | bool)
+        )
+
+    - name: Copy Gitea binary from repo
+      copy:
+        src: "{{ gitea_local_binary_src }}"
+        dest: /usr/local/bin/gitea
+        mode: '0755'
+        owner: root
+        group: root
+      when:
+        - install_gitea | bool
+        - gitea_binary_mode == 'local'
+        - gitea_local_binary_src | length > 0
+      notify: Restart gitea
+
+    - name: Download Gitea binary
+      get_url:
+        url: "{{ gitea_download_url }}"
+        dest: /usr/local/bin/gitea
+        mode: '0755'
+        owner: root
+        group: root
+      environment: "{{ proxy_env }}"
+      when:
+        - install_gitea | bool
+        - gitea_binary_mode != 'local'
+      notify: Restart gitea
+
+    - name: Copy Gitea runner binary from repo
+      copy:
+        src: "{{ gitea_runner_local_binary_src }}"
+        dest: /usr/local/bin/act_runner
+        mode: '0755'
+        owner: root
+        group: root
+      when:
+        - install_gitea_runner | bool
+        - gitea_runner_binary_mode == 'local'
+        - gitea_runner_local_binary_src | length > 0
+      notify: Restart Gitea runner
+
+    - name: Download Gitea runner binary
+      get_url:
+        url: "{{ gitea_runner_download_url }}"
+        dest: /usr/local/bin/act_runner
+        mode: '0755'
+        owner: root
+        group: root
+      environment: "{{ proxy_env }}"
+      when:
+        - install_gitea_runner | bool
+        - gitea_runner_binary_mode != 'local'
+      notify: Restart Gitea runner
+
+    - name: Copy Alertmanager archive from repo
+      copy:
+        src: "{{ alertmanager_local_archive_src }}"
+        dest: /tmp/alertmanager.tar.gz
+        mode: '0644'
+      when:
+        - alertmanager_binary_mode == 'local'
+        - alertmanager_local_archive_src | length > 0
+
+    - name: Download Alertmanager archive
+      get_url:
+        url: "{{ alertmanager_download_url }}"
+        dest: /tmp/alertmanager.tar.gz
+        mode: '0644'
+      environment: "{{ proxy_env }}"
+      when: alertmanager_binary_mode != 'local'
+
+    - name: Copy Loki archive from repo
+      copy:
+        src: "{{ loki_local_archive_src }}"
+        dest: /tmp/loki.zip
+        mode: '0644'
+      when:
+        - loki_binary_mode == 'local'
+        - loki_local_archive_src | length > 0
+
+    - name: Download Loki archive
+      get_url:
+        url: "{{ loki_download_url }}"
+        dest: /tmp/loki.zip
+        mode: '0644'
+      environment: "{{ proxy_env }}"
+      when: loki_binary_mode != 'local'
+
+    - name: Create Alertmanager temp directory
+      file:
+        path: /tmp/alertmanager
+        state: directory
+        mode: '0755'
+
+    - name: Create Loki temp directory
+      file:
+        path: /tmp/loki
+        state: directory
+        mode: '0755'
+
+    - name: Extract Alertmanager
+      unarchive:
+        src: /tmp/alertmanager.tar.gz
+        dest: /tmp/alertmanager
+        remote_src: true
+        creates: "/tmp/alertmanager/alertmanager-{{ alertmanager_version }}.linux-{{ alertmanager_binary_arch }}/alertmanager"
+
+    - name: Install Alertmanager binary
+      copy:
+        src: "/tmp/alertmanager/alertmanager-{{ alertmanager_version }}.linux-{{ alertmanager_binary_arch }}/alertmanager"
+        dest: /usr/local/bin/alertmanager
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0755'
+      notify: Restart Alertmanager
+
+    - name: Install amtool binary
+      copy:
+        src: "/tmp/alertmanager/alertmanager-{{ alertmanager_version }}.linux-{{ alertmanager_binary_arch }}/amtool"
+        dest: /usr/local/bin/amtool
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Install Alertmanager web UI files
+      shell: |
+        set -e
+        ui_root="/tmp/alertmanager/alertmanager-{{ alertmanager_version }}.linux-{{ alertmanager_binary_arch }}"
+        [ -d "${ui_root}" ] || exit 1
+        mkdir -p /usr/share/alertmanager/ui
+        rm -rf /usr/share/alertmanager/ui/app /usr/share/alertmanager/ui/lib
+        rm -f /usr/share/alertmanager/ui/index.html /usr/share/alertmanager/ui/script.js /usr/share/alertmanager/ui/favicon.ico
+        for item in app lib index.html script.js favicon.ico; do
+          if [ -e "${ui_root}/${item}" ]; then
+            cp -R "${ui_root}/${item}" /usr/share/alertmanager/ui/
+          fi
+        done
+      args:
+        executable: /bin/bash
+      notify: Restart Alertmanager
+
+    - name: Extract Loki
+      unarchive:
+        src: /tmp/loki.zip
+        dest: /tmp/loki
+        remote_src: true
+        creates: "/tmp/loki/loki-linux-{{ loki_binary_arch }}"
+
+    - name: Install Loki binary
+      copy:
+        src: "/tmp/loki/loki-linux-{{ loki_binary_arch }}"
+        dest: /usr/local/bin/loki
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0755'
+      notify: Restart Loki
+
+    - name: Render Prometheus configuration
+      template:
+        src: templates/prometheus.yml.j2
+        dest: /etc/prometheus/prometheus.yml
+        mode: '0644'
+      notify: Restart Prometheus
+
+    - name: Render Alertmanager configuration
+      template:
+        src: templates/alertmanager.yml.j2
+        dest: /etc/alertmanager/alertmanager.yml
+        owner: root
+        group: alertmanager
+        mode: '0640'
+      notify: Restart Alertmanager
+
+    - name: Validate Alertmanager configuration
+      command: /usr/local/bin/amtool check-config /etc/alertmanager/alertmanager.yml
+      register: alertmanager_config_check
+      changed_when: false
+
+    - name: Render Prometheus systemd override
+      template:
+        src: templates/prometheus.service.override.conf.j2
+        dest: /etc/systemd/system/prometheus.service.d/override.conf
+        mode: '0644'
+      notify:
+        - Reload systemd
+        - Restart Prometheus
+
+    - name: Render Alertmanager systemd service
+      template:
+        src: templates/alertmanager.service.j2
+        dest: /etc/systemd/system/alertmanager.service
+        mode: '0644'
+      notify:
+        - Reload systemd
+        - Restart Alertmanager
+
+    - name: Render Grafana datasource provisioning
+      template:
+        src: templates/grafana-datasource.yml.j2
+        dest: /etc/grafana/provisioning/datasources/datasource.yml
+        mode: '0644'
+      notify: Restart Grafana
+      when: install_grafana | bool
+
+    - name: Render Loki configuration
+      template:
+        src: templates/loki-config.yml.j2
+        dest: /etc/loki/config.yml
+        owner: root
+        group: loki
+        mode: '0640'
+      notify: Restart Loki
+
+    - name: Render Loki systemd service
+      template:
+        src: templates/loki.service.j2
+        dest: /etc/systemd/system/loki.service
+        mode: '0644'
+      notify:
+        - Reload systemd
+        - Restart Loki
+
+    - name: Render Grafana configuration
+      template:
+        src: templates/grafana.ini.j2
+        dest: /etc/grafana/grafana.ini
+        mode: '0644'
+      notify: Restart Grafana
+      when: install_grafana | bool
+
+    - name: Render Gitea app.ini
+      template:
+        src: templates/gitea-app.ini.j2
+        dest: /etc/gitea/app.ini
+        owner: git
+        group: git
+        mode: '0660'
+      when: install_gitea | bool
+      notify: Restart gitea
+
+    - name: Render Gitea systemd service
+      template:
+        src: templates/gitea.service.j2
+        dest: /etc/systemd/system/gitea.service
+        mode: '0644'
+      when: install_gitea | bool
+      notify:
+        - Reload systemd
+        - Restart gitea
+
+    - name: Render Gitea runner config
+      template:
+        src: templates/act_runner-config.yaml.j2
+        dest: /etc/act_runner/config.yaml
+        owner: root
+        group: act_runner
+        mode: '0640'
+      when: install_gitea_runner | bool
+      notify: Restart Gitea runner
+
+    - name: Render Gitea runner systemd service
+      template:
+        src: templates/act_runner.service.j2
+        dest: /etc/systemd/system/act_runner.service
+        mode: '0644'
+      when: install_gitea_runner | bool
+      notify:
+        - Reload systemd
+        - Restart Gitea runner
+
+    - name: Render MySQL init script for Gitea DB
+      template:
+        src: templates/mysql-init.sql.j2
+        dest: /root/01-gitea.sql
+        mode: '0600'
+      when: install_gitea | bool
+
+    - name: Ensure MariaDB is enabled and started
+      service:
+        name: mariadb
+        state: started
+        enabled: true
+
+    - name: Ensure old Debian Alertmanager service is stopped and disabled
+      service:
+        name: prometheus-alertmanager
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Uninstall Debian Alertmanager package
+      apt:
+        name:
+          - prometheus-alertmanager
+        state: absent
+        purge: true
+
+    - name: Remove old Alertmanager systemd override
+      file:
+        path: /etc/systemd/system/prometheus-alertmanager.service.d/override.conf
+        state: absent
+
+    - name: Ensure Docker is stopped and disabled
+      service:
+        name: docker
+        state: stopped
+        enabled: false
+      failed_when: false
+      when: install_gitea_runner | bool
+
+    - name: Initialize Gitea database
+      shell: mysql < /root/01-gitea.sql
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: install_gitea | bool
+
+    - name: Render Nginx landing page
+      template:
+        src: templates/monitoring-index.html.j2
+        dest: /var/www/html/index.html
+        mode: '0644'
+      notify: Restart Nginx
+
+    - name: Render Nginx reverse proxy site
+      template:
+        src: templates/nginx-monitoring.conf.j2
+        dest: /etc/nginx/sites-available/monitoring
+        mode: '0644'
+      notify: Restart Nginx
+
+    - name: Enable monitoring Nginx site
+      file:
+        src: /etc/nginx/sites-available/monitoring
+        dest: /etc/nginx/sites-enabled/monitoring
+        state: link
+      notify: Restart Nginx
+
+    - name: Disable default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Restart Nginx
+
+    - name: Validate Nginx configuration
+      command: nginx -t
+      register: nginx_config_check
+      changed_when: false
+
+    - name: Ensure native services are enabled and started
+      service:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+      loop:
+        - prometheus
+        - alertmanager
+        - loki
+        - gitea
+        - nginx
+      when: item != 'gitea' or (install_gitea | bool)
+
+    - name: Ensure Grafana is enabled and started
+      service:
+        name: grafana-server
+        state: started
+        enabled: true
+      when: install_grafana | bool
+
+    - meta: flush_handlers
+
+    - name: Wait for Grafana web UI
+      uri:
+        url: "http://127.0.0.1:{{ nginx_public_port | default(80) }}/grafana/login"
+        status_code: 200
+      register: grafana_check
+      retries: 20
+      delay: 5
+      until: grafana_check.status == 200
+      when: install_grafana | bool
+
+    - block:
+        - name: Wait for Alertmanager port
+          wait_for:
+            host: 127.0.0.1
+            port: "{{ alertmanager_port }}"
+            delay: 2
+            timeout: 180
+
+        - name: Wait for Alertmanager health endpoint
+          uri:
+            url: "http://127.0.0.1:{{ alertmanager_port }}/alertmanager/-/healthy"
+            status_code: 200
+          register: alertmanager_local_check
+          retries: 20
+          delay: 5
+          until: alertmanager_local_check.status == 200
+
+        - name: Wait for Alertmanager UI through Nginx
+          uri:
+            url: "http://127.0.0.1:{{ nginx_public_port | default(80) }}/alertmanager/"
+            status_code: 200
+          register: alertmanager_nginx_check
+          retries: 20
+          delay: 5
+          until: alertmanager_nginx_check.status == 200
+      rescue:
+        - name: Show Alertmanager service status
+          command: systemctl status alertmanager --no-pager
+          register: alertmanager_status
+          changed_when: false
+          failed_when: false
+
+        - name: Show recent Alertmanager logs
+          command: journalctl -u alertmanager -n 100 --no-pager
+          register: alertmanager_logs
+          changed_when: false
+          failed_when: false
+
+        - name: Print Alertmanager service status
+          debug:
+            var: alertmanager_status.stdout_lines
+
+        - name: Print recent Alertmanager logs
+          debug:
+            var: alertmanager_logs.stdout_lines
+
+        - name: Fail after collecting Alertmanager diagnostics
+          fail:
+            msg: "Alertmanager did not start successfully. Review the Alertmanager status and journal output above."
+
+    - block:
+        - name: Wait for Loki port
+          wait_for:
+            host: "{{ ansible_host | default(ansible_default_ipv4.address) }}"
+            port: "{{ loki_port }}"
+            delay: 2
+            timeout: 180
+
+        - name: Wait for Loki readiness endpoint
+          uri:
+            url: "http://{{ ansible_host | default(ansible_default_ipv4.address) }}:{{ loki_port }}/ready"
+            status_code: 200
+          register: loki_local_check
+          retries: 20
+          delay: 5
+          until: loki_local_check.status == 200
+
+        - name: Wait for Loki readiness endpoint through Nginx
+          uri:
+            url: "http://127.0.0.1:{{ nginx_public_port | default(80) }}/loki/ready"
+            status_code: 200
+          register: loki_nginx_check
+          retries: 20
+          delay: 5
+          until: loki_nginx_check.status == 200
+      rescue:
+        - name: Show Loki service status
+          command: systemctl status loki --no-pager
+          register: loki_status
+          changed_when: false
+          failed_when: false
+
+        - name: Show recent Loki logs
+          command: journalctl -u loki -n 100 --no-pager
+          register: loki_logs
+          changed_when: false
+          failed_when: false
+
+        - name: Print Loki service status
+          debug:
+            var: loki_status.stdout_lines
+
+        - name: Print recent Loki logs
+          debug:
+            var: loki_logs.stdout_lines
+
+        - name: Fail after collecting Loki diagnostics
+          fail:
+            msg: "Loki did not start successfully. Review the Loki status and journal output above."
+
+    - block:
+        - name: Wait for Gitea port
+          wait_for:
+            host: 127.0.0.1
+            port: "{{ gitea_http_port }}"
+            delay: 5
+            timeout: 300
+
+        - name: Wait for Gitea local web UI
+          uri:
+            url: "http://127.0.0.1:{{ gitea_http_port }}/"
+            status_code: [200, 302]
+          register: gitea_local_check
+          retries: 30
+          delay: 10
+          until: gitea_local_check.status in [200, 302]
+
+        - name: Wait for Gitea web UI through Nginx
+          uri:
+            url: "http://127.0.0.1:{{ nginx_public_port | default(80) }}/gitea/"
+            status_code: [200, 302]
+          register: gitea_check
+          retries: 30
+          delay: 10
+          until: gitea_check.status in [200, 302]
+      rescue:
+        - name: Show Gitea service status
+          command: systemctl status gitea --no-pager
+          register: gitea_status
+          changed_when: false
+          failed_when: false
+
+        - name: Show recent Gitea logs
+          command: journalctl -u gitea -n 100 --no-pager
+          register: gitea_logs
+          changed_when: false
+          failed_when: false
+
+        - name: Print Gitea service status
+          debug:
+            var: gitea_status.stdout_lines
+
+        - name: Print recent Gitea logs
+          debug:
+            var: gitea_logs.stdout_lines
+
+        - name: Fail after collecting Gitea diagnostics
+          fail:
+            msg: "Gitea did not start successfully. Review the Gitea status and journal output above."
+      when: install_gitea | bool
+
+    - name: List existing Gitea users
+      command: /usr/local/bin/gitea admin user list --config /etc/gitea/app.ini
+      become_user: git
+      environment:
+        HOME: /var/lib/gitea
+        GITEA_WORK_DIR: /var/lib/gitea
+      register: gitea_users
+      changed_when: false
+      when: install_gitea | bool
+
+    - name: Create Gitea admin user
+      shell: >
+        /usr/local/bin/gitea admin user create
+        --config /etc/gitea/app.ini
+        --admin
+        --username {{ gitea_admin_user | quote }}
+        --password {{ gitea_admin_password | quote }}
+        --email {{ gitea_admin_email | quote }}
+        --must-change-password=false
+      args:
+        executable: /bin/bash
+      become_user: git
+      environment:
+        HOME: /var/lib/gitea
+        GITEA_WORK_DIR: /var/lib/gitea
+      when:
+        - install_gitea | bool
+        - gitea_admin_user not in gitea_users.stdout
+
+    - name: Check whether Gitea runner is already registered
+      stat:
+        path: /var/lib/act_runner/.runner
+      register: gitea_runner_registration
+      when: install_gitea_runner | bool
+
+    - name: Stop Gitea runner before forced re-registration
+      service:
+        name: act_runner
+        state: stopped
+      failed_when: false
+      when:
+        - install_gitea_runner | bool
+        - gitea_runner_force_reregister | default(false) | bool
+
+    - name: Remove existing Gitea runner registration for forced re-registration
+      file:
+        path: /var/lib/act_runner/.runner
+        state: absent
+      when:
+        - install_gitea_runner | bool
+        - gitea_runner_force_reregister | default(false) | bool
+
+    - name: Register Gitea runner
+      shell: >
+        /usr/local/bin/act_runner register
+        --no-interactive
+        --config /etc/act_runner/config.yaml
+        --instance {{ gitea_runner_instance_url | quote }}
+        --token {{ gitea_runner_registration_token | quote }}
+        --name {{ gitea_runner_name | quote }}
+        --labels {{ gitea_runner_labels | quote }}
+      args:
+        executable: /bin/bash
+      become_user: act_runner
+      environment:
+        HOME: /var/lib/act_runner
+        GITEA_WORK_DIR: /var/lib/act_runner
+      when:
+        - install_gitea_runner | bool
+        - gitea_runner_registration_token | default('') | trim | length > 0
+        - gitea_runner_force_reregister | default(false) | bool or not gitea_runner_registration.stat.exists
+      notify: Restart Gitea runner
+
+    - name: Ensure Gitea runner service is enabled and started
+      service:
+        name: act_runner
+        state: started
+        enabled: true
+      when:
+        - install_gitea_runner | bool
+        - >
+          (
+            gitea_runner_registration is defined and
+            (gitea_runner_registration.stat.exists | default(false))
+          ) or
+          (gitea_runner_registration_token | default('') | trim | length > 0)
+
+    - meta: flush_handlers
+
+    - name: Show service URLs
+      debug:
+        msg:
+          - "Prometheus: {{ server_http_origin }}/prometheus/"
+          - "Alertmanager: {{ server_http_origin }}/alertmanager/"
+          - "Loki ready endpoint: {{ server_http_origin }}/loki/ready"
+
+    - name: Show Gitea URL
+      debug:
+        msg:
+          - "Gitea: {{ server_http_origin }}/gitea/"
+      when: install_gitea | bool
+
+    - name: Show Grafana URL
+      debug:
+        msg:
+          - "Grafana: {{ server_http_origin }}/grafana/"
+      when: install_grafana | bool
+
+    - name: Show next step for Gitea runner registration
+      debug:
+        msg:
+          - "Set gitea_runner_enabled=true to install the native runner on this host."
+          - "Then set gitea_runner_registration_token in group_vars/all.yml to auto-register it during the playbook run."
+      when: >
+        (install_gitea | bool) and
+        not (
+          (install_gitea_runner | bool) and
+          (
+            (
+              gitea_runner_registration is defined and
+              (gitea_runner_registration.stat.exists | default(false))
+            ) or
+            (gitea_runner_registration_token | default('') | trim | length > 0)
+          )
+        )
+
+  handlers:
+    - name: Refresh apt cache
+      apt:
+        update_cache: true
+
+    - name: Reload systemd
+      command: systemctl daemon-reload
+
+    - name: Restart Prometheus
+      service:
+        name: prometheus
+        state: restarted
+
+    - name: Restart Alertmanager
+      service:
+        name: alertmanager
+        state: restarted
+
+    - name: Restart Loki
+      service:
+        name: loki
+        state: restarted
+
+    - name: Restart Grafana
+      service:
+        name: grafana-server
+        state: restarted
+      when: install_grafana | bool
+
+    - name: Restart gitea
+      service:
+        name: gitea
+        state: restarted
+      when: install_gitea | bool
+
+    - name: Check Gitea runner registration state
+      listen: Restart Gitea runner
+      stat:
+        path: /var/lib/act_runner/.runner
+      register: handler_gitea_runner_registration
+      when: install_gitea_runner | bool
+
+    - name: Restart Gitea runner
+      listen: Restart Gitea runner
+      service:
+        name: act_runner
+        state: restarted
+      when:
+        - install_gitea_runner | bool
+        - handler_gitea_runner_registration.stat.exists | default(false)
+
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted

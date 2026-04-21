@@ -1,0 +1,103 @@
+server {
+    listen {{ nginx_public_port | default(80) }} default_server;
+    listen [::]:{{ nginx_public_port | default(80) }} default_server;
+    server_name _;
+    client_max_body_size 1G;
+
+    root /var/www/html;
+    index index.html;
+
+    location = / {
+        try_files /index.html =404;
+    }
+
+{% if install_grafana | bool %}
+    location = /grafana {
+        return 301 /grafana/;
+    }
+
+    location /grafana/ {
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_pass http://127.0.0.1:{{ grafana_port }};
+    }
+{% endif %}
+
+{% if install_gitea | bool %}
+    location = /gitea {
+        return 301 /gitea/;
+    }
+
+    location /gitea/ {
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Prefix /gitea;
+        proxy_pass http://127.0.0.1:{{ gitea_http_port }}/;
+    }
+{% endif %}
+
+    location = /prometheus {
+        return 301 /prometheus/;
+    }
+
+    location /prometheus/ {
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://127.0.0.1:{{ prometheus_port }};
+    }
+
+    location = /alertmanager {
+        return 301 /alertmanager/;
+    }
+
+    location /alertmanager/ {
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://127.0.0.1:{{ alertmanager_port }};
+    }
+
+    location = /loki {
+        return 301 /loki/;
+    }
+
+    location /loki/ {
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://{{ ansible_host | default(ansible_default_ipv4.address) }}:{{ loki_port }}/;
+    }
+
+{% for proxy in extra_nginx_reverse_proxies | default([]) %}
+    location = {{ proxy.path }} {
+        return 301 {{ proxy.path }}/;
+    }
+
+    location {{ proxy.path }}/ {
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+{% if proxy.forwarded_prefix is defined and proxy.forwarded_prefix | length > 0 %}
+        proxy_set_header X-Forwarded-Prefix {{ proxy.forwarded_prefix }};
+{% endif %}
+{% if proxy.websocket | default(false) | bool %}
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+{% endif %}
+        proxy_pass {{ proxy.upstream }}/;
+    }
+{% endfor %}
+}

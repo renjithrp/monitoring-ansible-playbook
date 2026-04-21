@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Monitoring Server</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 3rem;
+      line-height: 1.5;
+    }
+    h1 {
+      margin-bottom: 0.5rem;
+    }
+    ul {
+      padding-left: 1.25rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>Monitoring Server</h1>
+  <p>Native services exposed through Nginx:</p>
+  <ul>
+{% if install_grafana | bool %}
+    <li><a href="/grafana/">Grafana</a></li>
+{% endif %}
+    <li><a href="/prometheus/">Prometheus</a></li>
+    <li><a href="/alertmanager/">Alertmanager</a></li>
+    <li><a href="/loki/ready">Loki ready endpoint</a></li>
+{% if install_gitea | bool %}
+    <li><a href="/gitea/">Gitea</a></li>
+{% endif %}
+{% for proxy in extra_nginx_reverse_proxies | default([]) %}
+{% if proxy.show_on_index | default(true) | bool %}
+    <li><a href="{{ proxy.path }}/">{{ proxy.name | default(proxy.path) }}</a></li>
+{% endif %}
+{% endfor %}
+  </ul>
+</body>
+</html>

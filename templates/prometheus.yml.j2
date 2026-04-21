@@ -1,0 +1,30 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - path_prefix: /alertmanager
+      static_configs:
+        - targets:
+            - 127.0.0.1:{{ alertmanager_port }}
+
+scrape_configs:
+  - job_name: prometheus
+    metrics_path: /prometheus/metrics
+    static_configs:
+      - targets: ['127.0.0.1:{{ prometheus_port }}']
+
+  - job_name: alertmanager
+    metrics_path: /alertmanager/metrics
+    static_configs:
+      - targets: ['127.0.0.1:{{ alertmanager_port }}']
+
+  - job_name: loki
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['{{ ansible_host | default(ansible_default_ipv4.address) }}:{{ loki_port }}']
+
+{% if prometheus_additional_scrape_configs is defined and prometheus_additional_scrape_configs | length > 0 %}
+{{ prometheus_additional_scrape_configs | to_nice_yaml(indent=2) | indent(2, true) }}
+{% endif %}
